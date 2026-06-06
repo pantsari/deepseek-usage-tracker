@@ -1,0 +1,16 @@
+.vscode/**
+.gitignore
+.git/**
+.eslintrc*
+eslint.config.*
+.prettierrc
+.prettierignore
+.editorconfig
+AGENTS.md
+CHANGELOG.md
+specs/**
+test/**
+vitest.config.*
+node_modules/**
+*.vsix
+.opencode/**

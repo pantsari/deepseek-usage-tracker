@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+*.vsix
+
+# Test output
+coverage/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment and secrets
+.env
+.env.*

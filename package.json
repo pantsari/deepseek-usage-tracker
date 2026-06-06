@@ -1,0 +1,43 @@
+{
+  "name": "deepseek-usage-tracker",
+  "displayName": "DeepSeek Usage Tracker",
+  "description": "Displays DeepSeek API account balance in the VS Code status bar",
+  "version": "0.1.0",
+  "publisher": "pantsari",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseek-usage.click",
+        "title": "DeepSeek Usage — Click"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pantsari/deepseek-usage-tracker"
+  },
+  "scripts": {
+    "package": "vsce package",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.9.2",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "vitest": "^3.0.0"
+  }
+}
