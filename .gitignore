@@ -17,3 +17,7 @@ Thumbs.db
 # Environment and secrets
 .env
 .env.*
+
+# Internal specs (not for public repo)
+specs/reviews/
+specs/research/

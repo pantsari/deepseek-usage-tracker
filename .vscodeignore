@@ -1,13 +1,15 @@
 .vscode/**
 .gitignore
 .git/**
+.github/**
 .eslintrc*
 eslint.config.*
 .prettierrc
 .prettierignore
 .editorconfig
 AGENTS.md
-CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
 specs/**
 test/**
 vitest.config.*
