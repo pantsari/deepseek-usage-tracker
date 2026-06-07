@@ -1,31 +1,86 @@
 {
-  "name": "deepseek-usage-tracker",
-  "displayName": "DeepSeek Usage Tracker",
-  "description": "Displays DeepSeek API account balance in the VS Code status bar",
-  "version": "0.1.0",
+  "name": "deepseek-credit-status",
+  "displayName": "DeepSeek Credit Status — API Balance Monitor",
+  "description": "Monitor your DeepSeek API credits and balance in the VS Code status bar. Stay on top of your spending with real-time credit tracking, low-balance alerts, and one-click balance refresh. Never run out of DeepSeek tokens mid-session again.",
+  "version": "1.0.0",
   "publisher": "pantsari",
   "license": "MIT",
+  "icon": "appicon.png",
+  "galleryBanner": {
+    "color": "#4D6BFE",
+    "theme": "dark"
+  },
+  "screenshots": [
+    {
+      "path": "https://raw.githubusercontent.com/pantsari/deepseek-usage-tracker/main/Deepseek%20usage%20bar.png",
+      "caption": "Status bar showing DeepSeek balance"
+    },
+    {
+      "path": "https://raw.githubusercontent.com/pantsari/deepseek-usage-tracker/main/Command%20palette%20settings.png",
+      "caption": "Command Palette with DeepSeek settings"
+    }
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "deepseek",
+    "balance",
+    "credits",
+    "credit",
+    "usage",
+    "api",
+    "monitor",
+    "status bar",
+    "billing",
+    "warning",
+    "alert",
+    "token",
+    "top-up",
+    "notifications",
+    "spending",
+    "tracker",
+    "status"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
   "main": "./extension.js",
   "contributes": {
+    "configuration": {
+      "title": "DeepSeek Credit Status",
+      "properties": {
+        "deepseek-usage.warningThresholds": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "default": [
+            10,
+            5,
+            1
+          ],
+          "description": "Balance amounts that trigger a low-balance warning. Choose from $20, $10, $5, or $1 via QuickPick. Set to [] to disable."
+        }
+      }
+    },
     "commands": [
       {
         "command": "deepseek-usage.click",
-        "title": "DeepSeek Usage — Click"
+        "title": "DeepSeek Credit Status — Click"
       }
     ]
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/pantsari/deepseek-usage-tracker"
+  },
+  "bugs": {
+    "url": "https://github.com/pantsari/deepseek-usage-tracker/issues"
   },
   "scripts": {
     "package": "vsce package",
