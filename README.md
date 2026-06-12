@@ -1,4 +1,4 @@
-# DeepSeek Usage Tracker
+# DeepSeek Credit Status — API Balance Monitor
 
 Track your DeepSeek API account balance and remaining credits right from the
 VS Code status bar. Never get caught with an empty balance during a coding
@@ -16,19 +16,42 @@ No other APIs, analytics, telemetry, or third-party services are involved.
 
 ![Command palette with settings and actions](https://raw.githubusercontent.com/pantsari/deepseek-usage-tracker/main/Command%20palette%20settings.png)
 
+## What's new in 1.1.0
+
+- **Unmissable low-credit alert** — a modal warning always fires below $1 / ¥7
+  and at $0, with a one-click **Top Up** button
+- **Color-coded status bar** — turns yellow when your balance is low, red when
+  it is critically low or depleted
+- **Spend forecast** — estimated daily spend and "runs out in ~N days" in the
+  tooltip, computed locally from your balance history
+- **Custom warning thresholds**, Command Palette commands, and a configurable
+  refresh interval
+- **简体中文 localization** and a getting-started walkthrough
+
 ## Features
 
 - **Live balance in the status bar** — your DeepSeek credits displayed at a
-  glance, auto-refreshed every 5 minutes
+  glance, auto-refreshed at a configurable interval (default 5 minutes). The
+  status bar turns yellow when your balance is low and red when it is
+  critically low or depleted
+- **Mandatory low-credit alert** — a modal warning always fires below $1 / ¥7
+  and when credits run out, so you can never silently hit an empty balance.
+  Every alert includes a one-click "Top Up" button
 - **Low-balance warnings** — configurable alerts when your credits drop below
-  preset thresholds ($20, $10, $5, or $1). Tap the notification to adjust
-  settings immediately
-- **$0 alert** — a dedicated warning fires when you have no credits remaining,
-  regardless of threshold settings
+  preset thresholds ($20, $10, $5, $1) or any custom amounts you enter. Tap
+  the notification to adjust settings immediately
+- **Spend-rate estimate** — the tooltip shows your estimated daily spend and
+  roughly how long your credits will last, computed locally from balance
+  history (no extra API calls)
 - **Multi-currency support** — USD and CNY balances, switchable with one click
-- **QuickPick command palette** — click the status bar to refresh balance,
-  switch currencies, configure warning thresholds, change or clear your API key,
-  or open the DeepSeek billing dashboard
+- **Available in English and 简体中文** — the UI follows VS Code's display
+  language
+- **Command Palette integration** — `DeepSeek: Refresh Balance`, `DeepSeek:
+Set API Key`, `DeepSeek: Configure Warning Thresholds`, and `DeepSeek: Open
+Balance Menu`
+- **QuickPick menu** — click the status bar to refresh balance, switch
+  currencies, configure warning thresholds, change or clear your API key, top
+  up, or open the DeepSeek billing dashboard
 - **Secure by default** — your API key is stored in VS Code SecretStorage (macOS
   Keychain, Windows Credential Manager, or Linux libsecret/gnome-keyring)
 - **Zero runtime dependencies** — built entirely on the VS Code Extension API
@@ -41,6 +64,7 @@ No other APIs, analytics, telemetry, or third-party services are involved.
 3. Enter your DeepSeek API key (from
    [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys))
 4. Your balance appears in the status bar and refreshes every 5 minutes
+   (adjustable via the `deepseek-usage.refreshIntervalMinutes` setting)
 
 Click the status bar at any time to refresh, switch currencies, configure
 warning thresholds, change or clear your key, or open the DeepSeek usage

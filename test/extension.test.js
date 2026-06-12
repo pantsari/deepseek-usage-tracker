@@ -1,4 +1,13 @@
-const { fetchBalance, getCurrencySymbol, findBalanceInfo, shouldWarn } = require("../extension.js");
+const {
+  fetchBalance,
+  getCurrencySymbol,
+  findBalanceInfo,
+  shouldWarn,
+  getMandatoryFloor,
+  classifyBalance,
+  parseThresholdInput,
+  estimateSpendRate,
+} = require("../extension.js");
 
 describe("fetchBalance — API parsing", () => {
   it("[DU-API-UNIT-001] parses successful balance response", () => {
@@ -209,5 +218,143 @@ describe("Warnings — shouldWarn", () => {
   it("[DU-WARN-UNIT-008] warns for unwarned thresholds below balance", () => {
     const result = shouldWarn(0.5, [10, 5, 1], [5]);
     expect(result).toEqual([10, 1]);
+  });
+});
+
+describe("Warnings — getMandatoryFloor", () => {
+  it("[DU-FLOOR-UNIT-001] returns 1 for USD", () => {
+    expect(getMandatoryFloor("USD")).toBe(1);
+  });
+
+  it("[DU-FLOOR-UNIT-002] returns 7 for CNY", () => {
+    expect(getMandatoryFloor("CNY")).toBe(7);
+  });
+
+  it("[DU-FLOOR-UNIT-003] falls back to USD floor for unknown currency", () => {
+    expect(getMandatoryFloor("EUR")).toBe(1);
+  });
+});
+
+describe("Warnings — classifyBalance", () => {
+  it("[DU-SEV-UNIT-001] returns ok when balance is healthy", () => {
+    expect(classifyBalance(50, "USD", [10, 5, 1], true)).toBe("ok");
+  });
+
+  it("[DU-SEV-UNIT-002] returns warning below a configured threshold", () => {
+    expect(classifyBalance(8, "USD", [10, 5, 1], true)).toBe("warning");
+  });
+
+  it("[DU-SEV-UNIT-003] returns critical below the mandatory USD floor", () => {
+    expect(classifyBalance(0.5, "USD", [10, 5, 1], true)).toBe("critical");
+  });
+
+  it("[DU-SEV-UNIT-004] returns critical below the mandatory CNY floor", () => {
+    expect(classifyBalance(6.5, "CNY", [], true)).toBe("critical");
+  });
+
+  it("[DU-SEV-UNIT-005] returns depleted at zero balance", () => {
+    expect(classifyBalance(0, "USD", [10, 5, 1], true)).toBe("depleted");
+  });
+
+  it("[DU-SEV-UNIT-006] returns depleted when API reports unavailable", () => {
+    expect(classifyBalance(5, "USD", [10, 5, 1], false)).toBe("depleted");
+  });
+
+  it("[DU-SEV-UNIT-007] critical floor applies even with all thresholds disabled", () => {
+    expect(classifyBalance(0.5, "USD", [], true)).toBe("critical");
+  });
+
+  it("[DU-SEV-UNIT-008] balance exactly at floor is not critical", () => {
+    expect(classifyBalance(1, "USD", [], true)).toBe("ok");
+  });
+});
+
+describe("Thresholds — parseThresholdInput", () => {
+  it("[DU-PARSE-UNIT-001] parses comma-separated values sorted descending", () => {
+    expect(parseThresholdInput("5, 15, 2.50")).toEqual([15, 5, 2.5]);
+  });
+
+  it("[DU-PARSE-UNIT-002] deduplicates repeated values", () => {
+    expect(parseThresholdInput("10, 10, 5")).toEqual([10, 5]);
+  });
+
+  it("[DU-PARSE-UNIT-003] rejects non-numeric input", () => {
+    expect(parseThresholdInput("10, abc")).toBeNull();
+  });
+
+  it("[DU-PARSE-UNIT-004] rejects zero and negative values", () => {
+    expect(parseThresholdInput("10, 0")).toBeNull();
+    expect(parseThresholdInput("-5")).toBeNull();
+  });
+
+  it("[DU-PARSE-UNIT-005] rejects empty and undefined input", () => {
+    expect(parseThresholdInput("")).toBeNull();
+    expect(parseThresholdInput("   ")).toBeNull();
+    expect(parseThresholdInput(undefined)).toBeNull();
+  });
+
+  it("[DU-PARSE-UNIT-006] tolerates trailing commas and extra whitespace", () => {
+    expect(parseThresholdInput(" 20 , 1 , ")).toEqual([20, 1]);
+  });
+});
+
+describe("Spend rate — estimateSpendRate", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it("[DU-RATE-UNIT-001] returns null with fewer than two samples", () => {
+    expect(estimateSpendRate([])).toBeNull();
+    expect(estimateSpendRate([{ t: 0, a: 10 }])).toBeNull();
+    expect(estimateSpendRate(undefined)).toBeNull();
+  });
+
+  it("[DU-RATE-UNIT-002] returns null when the observation window is too short", () => {
+    const samples = [
+      { t: 0, a: 10 },
+      { t: 5 * 60 * 1000, a: 9 },
+    ];
+    expect(estimateSpendRate(samples)).toBeNull();
+  });
+
+  it("[DU-RATE-UNIT-003] computes daily spend and days left over one day", () => {
+    const samples = [
+      { t: 0, a: 10 },
+      { t: DAY, a: 8 },
+    ];
+    const rate = estimateSpendRate(samples);
+    expect(rate.perDay).toBeCloseTo(2);
+    expect(rate.daysLeft).toBeCloseTo(4);
+  });
+
+  it("[DU-RATE-UNIT-004] excludes top-ups from the spend total", () => {
+    const samples = [
+      { t: 0, a: 10 },
+      { t: DAY / 2, a: 8 },
+      { t: DAY, a: 20 },
+    ];
+    const rate = estimateSpendRate(samples);
+    expect(rate.perDay).toBeCloseTo(2);
+    expect(rate.daysLeft).toBeCloseTo(10);
+  });
+
+  it("[DU-RATE-UNIT-005] returns null when there is no spending", () => {
+    const flat = [
+      { t: 0, a: 10 },
+      { t: DAY, a: 10 },
+    ];
+    const onlyTopUps = [
+      { t: 0, a: 10 },
+      { t: DAY, a: 30 },
+    ];
+    expect(estimateSpendRate(flat)).toBeNull();
+    expect(estimateSpendRate(onlyTopUps)).toBeNull();
+  });
+
+  it("[DU-RATE-UNIT-006] sorts unordered samples before computing", () => {
+    const samples = [
+      { t: DAY, a: 8 },
+      { t: 0, a: 10 },
+    ];
+    const rate = estimateSpendRate(samples);
+    expect(rate.perDay).toBeCloseTo(2);
   });
 });

@@ -16,3 +16,7 @@ vitest.config.*
 node_modules/**
 *.vsix
 .opencode/**
+.claude/**
+.DS_Store
+Command palette settings.png
+Deepseek usage bar.png

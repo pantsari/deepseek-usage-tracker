@@ -1,0 +1,16 @@
+{
+  "command.click.title": "Open Balance Menu",
+  "command.refresh.title": "Refresh Balance",
+  "command.setApiKey.title": "Set API Key",
+  "command.configureWarnings.title": "Configure Warning Thresholds",
+  "config.warningThresholds.description": "Balance amounts (in your displayed currency) that trigger a low-balance warning. Configure interactively with the **DeepSeek: Configure Warning Thresholds** command, or edit here. Set to `[]` to disable optional warnings — a mandatory alert below $1 / ¥7 always stays on.",
+  "config.refreshIntervalMinutes.description": "How often the balance refreshes in the status bar, in minutes.",
+  "walkthrough.title": "Get Started with DeepSeek Credit Status",
+  "walkthrough.description": "Monitor your DeepSeek API credits in the status bar and never run out mid-session.",
+  "walkthrough.setApiKey.title": "Set your API key",
+  "walkthrough.setApiKey.description": "Store your DeepSeek API key securely in VS Code SecretStorage. It is only ever sent to api.deepseek.com.\n[Set API Key](command:deepseek-usage.setApiKey)",
+  "walkthrough.viewBalance.title": "See your balance",
+  "walkthrough.viewBalance.description": "Your credits appear in the status bar and refresh automatically. Click the item for quick actions.\n[Open Balance Menu](command:deepseek-usage.click)",
+  "walkthrough.configureWarnings.title": "Configure low-balance warnings",
+  "walkthrough.configureWarnings.description": "Choose the balance levels that should warn you. A mandatory alert below $1 / ¥7 is always on.\n[Configure Warning Thresholds](command:deepseek-usage.configureWarnings)"
+}

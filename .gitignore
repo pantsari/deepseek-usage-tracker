@@ -18,6 +18,13 @@ Thumbs.db
 .env
 .env.*
 
+# AI tooling local state (not for public repo)
+.claude/
+.opencode/
+
+# VS Code extension test harness
+.vscode-test/
+
 # Internal specs (not for public repo)
 specs/reviews/
 specs/research/

@@ -1,0 +1,16 @@
+{
+  "command.click.title": "打开余额菜单",
+  "command.refresh.title": "刷新余额",
+  "command.setApiKey.title": "设置 API 密钥",
+  "command.configureWarnings.title": "配置警告阈值",
+  "config.warningThresholds.description": "触发低余额警告的余额金额（以当前显示货币计）。可通过 **DeepSeek: 配置警告阈值** 命令交互式配置，也可在此直接编辑。设为 `[]` 可禁用可选警告——低于 $1 / ¥7 的强制警报始终保持开启。",
+  "config.refreshIntervalMinutes.description": "状态栏余额的刷新频率（分钟）。",
+  "walkthrough.title": "DeepSeek Credit Status 入门",
+  "walkthrough.description": "在状态栏中监控您的 DeepSeek API 余额，避免在工作中途余额耗尽。",
+  "walkthrough.setApiKey.title": "设置您的 API 密钥",
+  "walkthrough.setApiKey.description": "您的 DeepSeek API 密钥将安全存储在 VS Code SecretStorage 中，且仅会发送至 api.deepseek.com。\n[设置 API 密钥](command:deepseek-usage.setApiKey)",
+  "walkthrough.viewBalance.title": "查看您的余额",
+  "walkthrough.viewBalance.description": "您的余额显示在状态栏中并自动刷新。点击该项可执行快捷操作。\n[打开余额菜单](command:deepseek-usage.click)",
+  "walkthrough.configureWarnings.title": "配置低余额警告",
+  "walkthrough.configureWarnings.description": "选择需要发出警告的余额水平。低于 $1 / ¥7 的强制警报始终开启。\n[配置警告阈值](command:deepseek-usage.configureWarnings)"
+}

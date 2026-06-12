@@ -1,8 +1,8 @@
 {
   "name": "deepseek-credit-status",
   "displayName": "DeepSeek Credit Status — API Balance Monitor",
-  "description": "Monitor your DeepSeek API credits and balance in the VS Code status bar. Stay on top of your spending with real-time credit tracking, low-balance alerts, and one-click balance refresh. Never run out of DeepSeek tokens mid-session again.",
-  "version": "1.0.0",
+  "description": "Monitor your DeepSeek API credits and balance in the VS Code status bar. Real-time credit tracking, unmissable low-balance alerts, daily spend estimates, USD/CNY support, and one-click top-up. Available in English and 简体中文. Never run out of DeepSeek credits mid-session again.",
+  "version": "1.1.0",
   "publisher": "pantsari",
   "license": "MIT",
   "icon": "appicon.png",
@@ -43,12 +43,16 @@
     "notifications",
     "spending",
     "tracker",
-    "status"
+    "status",
+    "low balance",
+    "spend",
+    "中文"
   ],
   "activationEvents": [
     "onStartupFinished"
   ],
   "main": "./extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "configuration": {
       "title": "DeepSeek Credit Status",
@@ -64,14 +68,79 @@
             5,
             1
           ],
-          "description": "Balance amounts that trigger a low-balance warning. Choose from $20, $10, $5, or $1 via QuickPick. Set to [] to disable."
+          "markdownDescription": "%config.warningThresholds.description%"
+        },
+        "deepseek-usage.refreshIntervalMinutes": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 5,
+          "description": "%config.refreshIntervalMinutes.description%"
         }
       }
     },
     "commands": [
       {
         "command": "deepseek-usage.click",
-        "title": "DeepSeek Credit Status — Click"
+        "title": "%command.click.title%",
+        "category": "DeepSeek"
+      },
+      {
+        "command": "deepseek-usage.refresh",
+        "title": "%command.refresh.title%",
+        "category": "DeepSeek"
+      },
+      {
+        "command": "deepseek-usage.setApiKey",
+        "title": "%command.setApiKey.title%",
+        "category": "DeepSeek"
+      },
+      {
+        "command": "deepseek-usage.configureWarnings",
+        "title": "%command.configureWarnings.title%",
+        "category": "DeepSeek"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "gettingStarted",
+        "title": "%walkthrough.title%",
+        "description": "%walkthrough.description%",
+        "steps": [
+          {
+            "id": "setApiKey",
+            "title": "%walkthrough.setApiKey.title%",
+            "description": "%walkthrough.setApiKey.description%",
+            "media": {
+              "markdown": "walkthrough/set-api-key.md"
+            },
+            "completionEvents": [
+              "onCommand:deepseek-usage.setApiKey"
+            ]
+          },
+          {
+            "id": "viewBalance",
+            "title": "%walkthrough.viewBalance.title%",
+            "description": "%walkthrough.viewBalance.description%",
+            "media": {
+              "markdown": "walkthrough/view-balance.md"
+            },
+            "completionEvents": [
+              "onCommand:deepseek-usage.click"
+            ]
+          },
+          {
+            "id": "configureWarnings",
+            "title": "%walkthrough.configureWarnings.title%",
+            "description": "%walkthrough.configureWarnings.description%",
+            "media": {
+              "markdown": "walkthrough/configure-warnings.md"
+            },
+            "completionEvents": [
+              "onCommand:deepseek-usage.configureWarnings"
+            ]
+          }
+        ]
       }
     ]
   },

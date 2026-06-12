@@ -22,16 +22,23 @@ Module.prototype.require = function (id) {
         showWarningMessage: () => undefined,
         showErrorMessage: () => undefined,
       },
+      l10n: {
+        t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_, i) => String(args[Number(i)])),
+      },
       StatusBarAlignment: { Right: 1, Left: 2 },
       QuickPickItemKind: { Separator: -1 },
       ThemeIcon: class {},
+      ThemeColor: class {},
+      ConfigurationTarget: { Global: 1 },
       commands: { registerCommand: () => ({ dispose: () => {} }) },
       env: { openExternal: () => undefined },
       Uri: { parse: (s) => s },
       workspace: {
         getConfiguration: () => ({
-          get: () => [10, 5, 1],
+          get: (_key, fallback) => fallback,
+          update: () => Promise.resolve(),
         }),
+        onDidChangeConfiguration: () => ({ dispose: () => {} }),
       },
     };
   }
