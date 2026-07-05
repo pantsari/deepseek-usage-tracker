@@ -16,17 +16,19 @@ No other APIs, analytics, telemetry, or third-party services are involved.
 
 ![Command palette with settings and actions](https://raw.githubusercontent.com/pantsari/deepseek-usage-tracker/main/Command%20palette%20settings.png)
 
-## What's new in 1.1.0
+## What's new in 1.2.0
 
-- **Unmissable low-credit alert** — a modal warning always fires below $1 / ¥7
-  and at $0, with a one-click **Top Up** button
-- **Color-coded status bar** — turns yellow when your balance is low, red when
-  it is critically low or depleted
-- **Spend forecast** — estimated daily spend and "runs out in ~N days" in the
-  tooltip, computed locally from your balance history
-- **Custom warning thresholds**, Command Palette commands, and a configurable
-  refresh interval
-- **简体中文 localization** and a getting-started walkthrough
+- **Surge-pricing awareness** — the status bar now shows whether DeepSeek's
+  V4 surge pricing is active, with a live countdown to the next change
+  (e.g. `DeepSeek: $0.92 · Normal · Surge in 2h 14m`)
+- **Amber status bar during surge** — instantly see when higher API prices
+  apply; critical low-balance red always takes precedence
+- **Surge start/end notifications** — a small popup when surge pricing begins
+  or ends while VS Code is running
+- **Pricing row in the balance menu** — the next surge transition shown in
+  UTC (English) or Shanghai time (中文)
+- All computed locally from the published surge windows (09:00–12:00 and
+  14:00–18:00 Asia/Shanghai) — no extra API calls
 
 ## Features
 
@@ -34,6 +36,13 @@ No other APIs, analytics, telemetry, or third-party services are involved.
   glance, auto-refreshed at a configurable interval (default 5 minutes). The
   status bar turns yellow when your balance is low and red when it is
   critically low or depleted
+- **Surge-pricing awareness** — the status bar shows the current DeepSeek V4
+  pricing state (normal or surge) with a live countdown to the next
+  transition, turns amber while surge pricing is active, and pops up a
+  notification when surge starts or ends. Transition times are shown in UTC
+  for English and Shanghai time for Chinese. Computed locally from the
+  official surge windows (09:00–12:00 and 14:00–18:00 Asia/Shanghai) — no
+  extra API calls
 - **Mandatory low-credit alert** — a modal warning always fires below $1 / ¥7
   and when credits run out, so you can never silently hit an empty balance.
   Every alert includes a one-click "Top Up" button

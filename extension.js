@@ -1,5 +1,6 @@
 const vscode = require("vscode");
 const https = require("https");
+const { getDeepSeekPricingState, formatDuration } = require("./pricing");
 
 const SECRET_KEY_ID = "deepseek-api-key";
 const CURRENCY_STATE_KEY = "deepseek-currency";
@@ -23,9 +24,19 @@ const HISTORY_MAX_SAMPLES = 500;
 // Below this observation window a spend estimate would be mostly noise.
 const MIN_ESTIMATE_SPAN_MS = 30 * 60 * 1000;
 
+// The surge countdown is computed locally (no API call), so it can refresh
+// far more often than the balance without costing anything.
+const PRICING_REFRESH_MS = 30 * 1000;
+
 let updatingBalance = false;
 let statusBar;
 let lastBalance = null;
+// Last successful balance render, so pricing ticks can redraw the status bar
+// without another API call. Null while logged out, errored, or loading.
+let lastStatus = null;
+// null until the first pricing evaluation, so activating mid-surge does not
+// fire a "surge started" notification.
+let lastKnownSurge = null;
 
 /**
  * @param {vscode.ExtensionContext} context
@@ -56,6 +67,10 @@ function activate(context) {
   let timer = setInterval(() => updateStatusBar(context), getRefreshIntervalMs());
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 
+  lastKnownSurge = getDeepSeekPricingState(new Date(), getUiLocale()).isSurge;
+  const pricingTimer = setInterval(() => pricingTick(), PRICING_REFRESH_MS);
+  context.subscriptions.push({ dispose: () => clearInterval(pricingTimer) });
+
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(async (event) => {
       if (event.affectsConfiguration("deepseek-usage.refreshIntervalMinutes")) {
@@ -77,6 +92,95 @@ function getRefreshIntervalMs() {
     ? Math.min(Math.max(minutes, 1), 120)
     : DEFAULT_REFRESH_MINUTES;
   return clamped * 60 * 1000;
+}
+
+// The VS Code display language also drives which l10n bundle is loaded, so
+// pricing time zones (UTC vs Shanghai) always match the UI language.
+function getUiLocale() {
+  return vscode.env.language || "en";
+}
+
+/**
+ * Computes the current pricing state plus the localized label/description
+ * pair shared by the quick-pick row and the status bar tooltip.
+ */
+function getPricingDisplay() {
+  const locale = getUiLocale();
+  const state = getDeepSeekPricingState(new Date(), locale);
+  const countdown = formatDuration(state.timeUntilTransitionMs, locale);
+  const label = state.isSurge ? vscode.l10n.t("Pricing: Surge") : vscode.l10n.t("Pricing: Normal");
+  const description = state.isSurge
+    ? vscode.l10n.t("Surge ends at {0} · in {1}", state.displayTimeLabel, countdown)
+    : vscode.l10n.t("Surge starts at {0} · in {1}", state.displayTimeLabel, countdown);
+  return { state, countdown, label, description };
+}
+
+/**
+ * Redraws the status bar from the last fetched balance and the current
+ * pricing state. Purely local — never calls the DeepSeek API.
+ *
+ * Color precedence: red for critical/depleted balance, amber when below a
+ * warning threshold or during surge pricing, default otherwise. Surge keeps
+ * the normal graph icon so it cannot be mistaken for a balance problem.
+ */
+function renderStatusBar() {
+  if (!lastStatus) return;
+  const { severity, money, tooltipLines } = lastStatus;
+  const pricing = getPricingDisplay();
+
+  if (severity === "depleted") {
+    statusBar.text = "$(error) " + vscode.l10n.t("DeepSeek: {0} — out of credits", money);
+  } else {
+    const icon = severity === "ok" ? "$(graph)" : "$(warning)";
+    const text = pricing.state.isSurge
+      ? vscode.l10n.t("DeepSeek: {0} · Surge · Ends in {1}", money, pricing.countdown)
+      : vscode.l10n.t("DeepSeek: {0} · Normal · Surge in {1}", money, pricing.countdown);
+    statusBar.text = icon + " " + text;
+  }
+
+  statusBar.backgroundColor =
+    severity === "depleted" || severity === "critical"
+      ? new vscode.ThemeColor("statusBarItem.errorBackground")
+      : severity === "warning" || pricing.state.isSurge
+        ? new vscode.ThemeColor("statusBarItem.warningBackground")
+        : undefined;
+
+  statusBar.tooltip = [
+    ...tooltipLines,
+    "",
+    pricing.label,
+    pricing.description,
+    "",
+    vscode.l10n.t("Click for options"),
+  ].join("\n");
+}
+
+/**
+ * Periodic local pricing refresh: keeps the countdown current and notifies
+ * on surge start/end. Comparing only the previous boolean state means a
+ * machine waking from sleep gets at most one notification, however many
+ * transitions were missed.
+ */
+function pricingTick() {
+  const state = getDeepSeekPricingState(new Date(), getUiLocale());
+  if (lastKnownSurge !== null && lastKnownSurge !== state.isSurge) {
+    if (state.isSurge) {
+      vscode.window.showInformationMessage(
+        vscode.l10n.t(
+          "DeepSeek surge pricing has started. Higher API prices are now active until {0}.",
+          state.displayTimeLabel,
+        ),
+      );
+    } else {
+      vscode.window.showInformationMessage(
+        vscode.l10n.t(
+          "DeepSeek surge pricing has ended. Normal API pricing is now active until the next surge window.",
+        ),
+      );
+    }
+  }
+  lastKnownSurge = state.isSurge;
+  renderStatusBar();
 }
 
 function getCurrencySymbol(currency) {
@@ -418,6 +522,7 @@ async function updateStatusBar(context) {
       statusBar.tooltip = vscode.l10n.t("Click to enter your DeepSeek API key");
       statusBar.backgroundColor = undefined;
       lastBalance = null;
+      lastStatus = null;
       return;
     }
 
@@ -444,19 +549,6 @@ async function updateStatusBar(context) {
 
         const samples = await recordBalanceSample(context, info.currency, total);
         const rate = estimateSpendRate(samples);
-
-        if (severity === "depleted") {
-          statusBar.text = "$(error) " + vscode.l10n.t("DeepSeek: {0} — out of credits", money);
-        } else {
-          const icon = severity === "ok" ? "$(graph)" : "$(warning)";
-          statusBar.text = icon + " " + vscode.l10n.t("DeepSeek: {0} left", money);
-        }
-        statusBar.backgroundColor =
-          severity === "depleted" || severity === "critical"
-            ? new vscode.ThemeColor("statusBarItem.errorBackground")
-            : severity === "warning"
-              ? new vscode.ThemeColor("statusBarItem.warningBackground")
-              : undefined;
 
         const tooltipLines = [
           vscode.l10n.t("Display: {0}", info.currency),
@@ -497,12 +589,13 @@ async function updateStatusBar(context) {
           }
         }
 
-        tooltipLines.push("", vscode.l10n.t("Click for options"));
-        statusBar.tooltip = tooltipLines.join("\n");
+        lastStatus = { severity, money, tooltipLines };
+        renderStatusBar();
       } else {
         statusBar.text = "$(warning) " + vscode.l10n.t("DeepSeek: No data");
         statusBar.tooltip = vscode.l10n.t("Balance returned but no currency data found");
         statusBar.backgroundColor = undefined;
+        lastStatus = null;
       }
     } else {
       statusBar.text = "$(warning) " + vscode.l10n.t("DeepSeek: Unavailable");
@@ -510,11 +603,13 @@ async function updateStatusBar(context) {
         "Balance info is not available — you may be out of credits",
       );
       statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+      lastStatus = null;
     }
   } catch {
     statusBar.text = "$(error) " + vscode.l10n.t("DeepSeek: Error");
     statusBar.tooltip = vscode.l10n.t("Failed to fetch balance. Click to retry.");
     statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
+    lastStatus = null;
   } finally {
     updatingBalance = false;
   }
@@ -658,6 +753,14 @@ function renderQuickPickItems(quickPick, context, balance) {
       });
     }
   }
+
+  // Informational only — no `action`, so onDidAccept ignores a selection.
+  const pricing = getPricingDisplay();
+  items.push({
+    label: "$(graph) " + pricing.label,
+    description: pricing.description,
+    alwaysShow: true,
+  });
 
   items.push({ label: "", kind: vscode.QuickPickItemKind.Separator });
 

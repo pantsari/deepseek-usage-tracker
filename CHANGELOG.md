@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] - 2026-07-05
+
+### Added
+
+- **Surge-pricing awareness** — the extension now tracks DeepSeek's V4 surge
+  windows (09:00–12:00 and 14:00–18:00 Asia/Shanghai) locally, with no extra
+  API calls:
+  - Status bar shows the current pricing state and a live countdown to the
+    next transition (e.g. `DeepSeek: $0.92 · Normal · Surge in 2h 14m`),
+    refreshed every 30 seconds
+  - Amber status bar background during surge pricing; critical low-balance
+    red always takes precedence
+  - Pricing row in the balance menu with the next transition time (UTC for
+    English, Shanghai time for Chinese)
+  - Notification when surge pricing starts or ends while VS Code is running
+    (never on activation, at most one after waking from sleep)
+
 ## [1.1.0] - 2026-06-13
 
 ### Added
