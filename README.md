@@ -1,8 +1,9 @@
 # DeepSeek Credit Status — API Balance Monitor
 
 Track your DeepSeek API account balance and remaining credits right from the
-VS Code status bar. Never get caught with an empty balance during a coding
-session again.
+VS Code status bar — now with DeepSeek surge-pricing monitoring and a live
+countdown to the next price change. Never get caught with an empty balance or
+a surprise surge price during a coding session again.
 
 Ideal for developers using [DeepSeek](https://platform.deepseek.com) with
 [OpenCode](https://opencode.ai) or any other AI coding tool inside VS Code.
