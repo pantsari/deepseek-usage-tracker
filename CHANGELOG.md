@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1] - 2026-07-05
+
+### Changed
+
+- Marketplace listing: added AI and Machine Learning categories, refreshed
+  description and screenshots for the surge-pricing feature
+
 ## [1.2.0] - 2026-07-05
 
 ### Added
