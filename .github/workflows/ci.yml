@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   test:
@@ -13,8 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
       - run: npm ci
-      - run: npx eslint .
       - run: npx prettier --check .
+      - run: npx eslint .
       - run: npx vitest run

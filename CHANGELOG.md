@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2] - 2026-07-18
+
+### Added
+
+- GitHub Actions CI workflow (Prettier, ESLint, unit tests) and clickable
+  badges in the README
+
 ## [1.2.1] - 2026-07-05
 
 ### Changed

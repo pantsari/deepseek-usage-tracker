@@ -2,7 +2,7 @@
   "name": "deepseek-credit-status",
   "displayName": "DeepSeek Credit Status — API Balance Monitor",
   "description": "Monitor your DeepSeek API credits and balance in the VS Code status bar. Real-time credit tracking, unmissable low-balance alerts, daily spend estimates, USD/CNY support, and one-click top-up. Available in English and 简体中文. New! Surge pricing monitoring.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "pantsari",
   "license": "MIT",
   "icon": "appicon.png",

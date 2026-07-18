@@ -1,5 +1,10 @@
 # DeepSeek Credit Status — API Balance Monitor
 
+[![CI](https://github.com/pantsari/deepseek-usage-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/pantsari/deepseek-usage-tracker/actions/workflows/ci.yml)
+[![Marketplace version](https://vsmarketplacebadges.dev/version/pantsari.deepseek-credit-status.svg)](https://marketplace.visualstudio.com/items?itemName=pantsari.deepseek-credit-status)
+[![License: MIT](https://img.shields.io/github/license/pantsari/deepseek-usage-tracker)](https://github.com/pantsari/deepseek-usage-tracker/blob/main/LICENSE)
+[![Runtime dependencies: zero](https://img.shields.io/badge/runtime%20dependencies-zero-brightgreen)](https://github.com/pantsari/deepseek-usage-tracker/blob/main/specs/decisions/0001-zero-dependencies.md)
+
 Track your DeepSeek API account balance and remaining credits right from the
 VS Code status bar — now with DeepSeek surge-pricing monitoring and a live
 countdown to the next price change. Never get caught with an empty balance or
