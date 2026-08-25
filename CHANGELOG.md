@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.3.0] - 2026-08-25
+
+### Added
+
+- Weekend-aware pricing status: Saturday and Sunday are off-peak all day in
+  Beijing time, and Friday's final transition points to Monday morning
+- Typed balance-request error classification for authentication, insufficient
+  balance, rate limits, timeouts, network failures, invalid responses, and
+  DeepSeek service failures
+
+### Changed
+
+- Updated pricing awareness for DeepSeek's billing rules effective August 23,
+  2026: peak windows now apply Monday–Friday only (Beijing time)
+- Replaced Normal/Surge wording with DeepSeek's official Peak/Off-peak
+  terminology throughout the English and Simplified Chinese UI
+- Weekend countdowns now skip directly to Monday's first peak window and use
+  compact day/hour formatting (for example, `2d 15h`)
+- Friday's peak-end notification now confirms that off-peak pricing remains
+  active through the weekend
+- Opening the balance menu and updating the status bar now share one balance
+  request; concurrent refreshes reuse the same in-flight request
+- The historical `deepseek-usage.*` command and setting IDs remain unchanged
+  for compatibility with existing settings and keybindings
+- Updated the Marketplace description, README feature copy, screenshot
+  caption, keywords, and current API price table for the new billing rules
+
+### Fixed
+
+- Response-stream failures after HTTP headers now settle as network errors
+  instead of wedging all future refreshes behind a dead in-flight request
+- Changing or clearing an API key now supersedes old-key requests before they
+  can update the status bar, warning state, cached balance, or balance history;
+  key-save confirmation is tied to a successful check of that exact key
+- Successful HTTP responses are now validated as usable balance payloads;
+  malformed objects, `null`, and empty balance arrays report an invalid response,
+  while unavailable accounts with populated balances remain supported
+- HTTP 402 insufficient-balance responses now point to the existing Top Up
+  option instead of appearing as generic service failures
+- Failed balance-menu requests show only the error state, without stale account
+  figures or an indefinite loading row, and failed manual refreshes do not
+  report success
+- Invalid-key tooltips now accurately say that clicking opens the options menu
+
 ## [1.2.2] - 2026-07-18
 
 ### Added

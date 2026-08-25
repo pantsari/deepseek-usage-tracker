@@ -1,11 +1,13 @@
-// DeepSeek V4 surge-pricing windows, defined in Shanghai wall-clock time.
-// There is no official pricing API — these windows are maintained by hand.
-const DEEPSEEK_SURGE_WINDOWS_SHANGHAI = [
+// DeepSeek API peak-pricing windows, defined in Beijing wall-clock time.
+// There is no pricing-schedule API, so these published windows are maintained
+// by hand. They apply Monday through Friday; weekends are entirely off-peak.
+const DEEPSEEK_PEAK_WINDOWS_BEIJING = [
   { start: "09:00", end: "12:00" },
   { start: "14:00", end: "18:00" },
 ];
 
-const SHANGHAI_TZ = "Asia/Shanghai";
+// Beijing uses the IANA Asia/Shanghai zone and stays on UTC+8 year-round.
+const BEIJING_TZ = "Asia/Shanghai";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -50,7 +52,7 @@ function getTimeZoneOffsetMs(date, timeZone) {
 }
 
 /**
- * Converts a Shanghai wall-clock target (day offset from `wall`'s date plus
+ * Converts a Beijing wall-clock target (day offset from `wall`'s date plus
  * ms-of-day) back to a UTC instant.
  */
 function wallClockToInstant(wall, dayOffset, msOfDay, offsetMsGuess) {
@@ -61,17 +63,26 @@ function wallClockToInstant(wall, dayOffset, msOfDay, offsetMsGuess) {
   );
   let instantMs = wallMidnightUtc + msOfDay - offsetMsGuess;
   // Re-derive the offset at the target instant in case it differs from now's.
-  instantMs = wallMidnightUtc + msOfDay - getTimeZoneOffsetMs(new Date(instantMs), SHANGHAI_TZ);
+  instantMs = wallMidnightUtc + msOfDay - getTimeZoneOffsetMs(new Date(instantMs), BEIJING_TZ);
   return new Date(instantMs);
 }
 
 /**
  * Formats a duration for countdown display: "2h 14m" / "37m" in English,
- * "2小时14分钟" / "37分钟" in Chinese. Rounds up so the countdown never
- * promises more time than is actually left.
+ * "2小时14分钟" / "37分钟" in Chinese. Durations of a day or more use days
+ * and hours to keep long weekend countdowns compact.
  */
 function formatDuration(ms, locale) {
   const totalMinutes = Math.max(1, Math.ceil(ms / MINUTE_MS));
+  if (totalMinutes >= 24 * 60) {
+    const totalHours = Math.ceil(ms / HOUR_MS);
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    if (isChineseLocale(locale)) {
+      return hours > 0 ? `${days}天${hours}小时` : `${days}天`;
+    }
+    return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  }
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (isChineseLocale(locale)) {
@@ -81,10 +92,10 @@ function formatDuration(ms, locale) {
 }
 
 /**
- * Determines the current DeepSeek pricing state from the surge windows,
- * evaluated in Shanghai time regardless of the machine's time zone.
+ * Determines the current DeepSeek pricing state from the weekday peak
+ * windows, evaluated in Beijing time regardless of the machine's time zone.
  *
- * Transition times are displayed in UTC for English and in Shanghai time for
+ * Transition times are displayed in UTC for English and in Beijing time for
  * Chinese. The two state labels here deliberately mirror the l10n bundle —
  * this module stays free of any vscode dependency so it is unit-testable.
  *
@@ -92,8 +103,8 @@ function formatDuration(ms, locale) {
  * @param {string} [locale] VS Code UI language, e.g. "en" or "zh-cn"
  */
 function getDeepSeekPricingState(now = new Date(), locale = "en") {
-  const offsetMs = getTimeZoneOffsetMs(now, SHANGHAI_TZ);
-  // Shanghai wall clock, read via the getUTC* accessors.
+  const offsetMs = getTimeZoneOffsetMs(now, BEIJING_TZ);
+  // Beijing wall clock, read via the getUTC* accessors.
   const wall = new Date(now.getTime() + offsetMs);
   const msOfDay =
     wall.getUTCHours() * HOUR_MS +
@@ -101,38 +112,51 @@ function getDeepSeekPricingState(now = new Date(), locale = "en") {
     wall.getUTCSeconds() * 1000 +
     wall.getUTCMilliseconds();
 
-  let isSurge = false;
+  const wallWeekday = wall.getUTCDay();
+  const isWeekday = wallWeekday >= 1 && wallWeekday <= 5;
+
+  let isPeak = false;
   let nextTransitionType = null;
   let targetMsOfDay = null;
   let targetDayOffset = 0;
 
-  for (const window of DEEPSEEK_SURGE_WINDOWS_SHANGHAI) {
-    const startMs = parseHmToMs(window.start);
-    const endMs = parseHmToMs(window.end);
-    if (msOfDay < startMs) {
-      nextTransitionType = "surge-start";
-      targetMsOfDay = startMs;
-      break;
-    }
-    if (msOfDay < endMs) {
-      isSurge = true;
-      nextTransitionType = "surge-end";
-      targetMsOfDay = endMs;
-      break;
+  if (isWeekday) {
+    for (const window of DEEPSEEK_PEAK_WINDOWS_BEIJING) {
+      const startMs = parseHmToMs(window.start);
+      const endMs = parseHmToMs(window.end);
+      if (msOfDay < startMs) {
+        nextTransitionType = "peak-start";
+        targetMsOfDay = startMs;
+        break;
+      }
+      if (msOfDay < endMs) {
+        isPeak = true;
+        nextTransitionType = "peak-end";
+        targetMsOfDay = endMs;
+        break;
+      }
     }
   }
 
-  // Past the last window: the next transition is tomorrow's first surge start.
+  // On weekends, or after the final weekday window, find the next weekday's
+  // first peak start. The loop is bounded because a weekday is at most three
+  // calendar days away (Friday evening to Monday morning).
   if (targetMsOfDay === null) {
-    nextTransitionType = "surge-start";
-    targetMsOfDay = parseHmToMs(DEEPSEEK_SURGE_WINDOWS_SHANGHAI[0].start);
-    targetDayOffset = 1;
+    nextTransitionType = "peak-start";
+    targetMsOfDay = parseHmToMs(DEEPSEEK_PEAK_WINDOWS_BEIJING[0].start);
+    for (let dayOffset = 1; dayOffset <= 7; dayOffset += 1) {
+      const targetWeekday = (wallWeekday + dayOffset) % 7;
+      if (targetWeekday >= 1 && targetWeekday <= 5) {
+        targetDayOffset = dayOffset;
+        break;
+      }
+    }
   }
 
   const nextTransitionAt = wallClockToInstant(wall, targetDayOffset, targetMsOfDay, offsetMs);
 
   const chinese = isChineseLocale(locale);
-  const displayTimezone = chinese ? SHANGHAI_TZ : "UTC";
+  const displayTimezone = chinese ? BEIJING_TZ : "UTC";
   const timeText = new Intl.DateTimeFormat("en-GB", {
     timeZone: displayTimezone,
     hour: "2-digit",
@@ -141,25 +165,26 @@ function getDeepSeekPricingState(now = new Date(), locale = "en") {
   }).format(nextTransitionAt);
 
   return {
-    isSurge,
+    isPeak,
     currentStateLabel: chinese
-      ? isSurge
-        ? "高峰价格"
-        : "普通价格"
-      : isSurge
-        ? "Surge pricing"
-        : "Normal pricing",
+      ? isPeak
+        ? "峰时价格"
+        : "非峰时价格"
+      : isPeak
+        ? "Peak pricing"
+        : "Off-peak pricing",
     nextTransitionAt,
     nextTransitionType,
+    nextTransitionDayOffset: targetDayOffset,
     timeUntilTransitionMs: nextTransitionAt.getTime() - now.getTime(),
-    currentWindowEndAt: isSurge ? nextTransitionAt : undefined,
+    currentPeakEndAt: isPeak ? nextTransitionAt : undefined,
     displayTimezone,
-    displayTimeLabel: chinese ? `${timeText} 上海时间` : `${timeText} UTC`,
+    displayTimeLabel: chinese ? `${timeText} 北京时间` : `${timeText} UTC`,
   };
 }
 
 module.exports = {
-  DEEPSEEK_SURGE_WINDOWS_SHANGHAI,
+  DEEPSEEK_PEAK_WINDOWS_BEIJING,
   getDeepSeekPricingState,
   formatDuration,
   isChineseLocale,

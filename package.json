@@ -1,8 +1,8 @@
 {
   "name": "deepseek-credit-status",
   "displayName": "DeepSeek Credit Status — API Balance Monitor",
-  "description": "Monitor your DeepSeek API credits and balance in the VS Code status bar. Real-time credit tracking, unmissable low-balance alerts, daily spend estimates, USD/CNY support, and one-click top-up. Available in English and 简体中文. New! Surge pricing monitoring.",
-  "version": "1.2.2",
+  "description": "Monitor DeepSeek API balance and peak/off-peak pricing in VS Code. Updated for the August 23, 2026 weekday/weekend billing rules, with efficient single-request refreshes, clear API-key and network errors, alerts, spend estimates, USD/CNY, and 简体中文.",
+  "version": "1.3.0",
   "publisher": "pantsari",
   "license": "MIT",
   "icon": "appicon.png",
@@ -13,7 +13,7 @@
   "screenshots": [
     {
       "path": "https://raw.githubusercontent.com/pantsari/deepseek-usage-tracker/main/Deepseek%20usage%20bar.png",
-      "caption": "Status bar showing DeepSeek balance"
+      "caption": "Status bar showing DeepSeek balance and pricing"
     },
     {
       "path": "https://raw.githubusercontent.com/pantsari/deepseek-usage-tracker/main/Command%20palette%20settings.png",
@@ -43,9 +43,10 @@
     "token",
     "top-up",
     "notifications",
-    "surge",
+    "peak",
     "pricing",
     "off-peak",
+    "weekend pricing",
     "spending",
     "tracker",
     "status",

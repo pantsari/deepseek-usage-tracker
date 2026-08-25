@@ -1,5 +1,15 @@
+const https = require("https");
+const vscode = require("vscode");
+
 const {
+  BalanceFetchError,
+  activate,
   fetchBalance,
+  getBalanceErrorPresentation,
+  createSingleFlight,
+  renderQuickPickItems,
+  promptForApiKey,
+  handleAction,
   getCurrencySymbol,
   findBalanceInfo,
   shouldWarn,
@@ -8,6 +18,158 @@ const {
   parseThresholdInput,
   estimateSpendRate,
 } = require("../extension.js");
+
+function mockHttpsRequest({
+  statusCode = 200,
+  body = "",
+  requestError,
+  responseError,
+  timeout = false,
+  defer = false,
+  responses,
+}) {
+  const pendingResponses = [];
+  const requests = [];
+  let responseIndex = 0;
+
+  const requestSpy = vi.spyOn(https, "request").mockImplementation((_options, callback) => {
+    const responseOptions = {
+      statusCode,
+      body,
+      requestError,
+      responseError,
+      timeout,
+      ...(responses?.[responseIndex] || {}),
+    };
+    responseIndex += 1;
+
+    const requestHandlers = {};
+    const request = {
+      on: vi.fn((event, handler) => {
+        requestHandlers[event] = handler;
+        return request;
+      }),
+      destroy: vi.fn((error) => {
+        if (error) requestHandlers.error?.(error);
+      }),
+      end: vi.fn(() => {
+        if (responseOptions.requestError) {
+          requestHandlers.error?.(responseOptions.requestError);
+          return;
+        }
+        if (responseOptions.timeout) {
+          requestHandlers.timeout?.();
+          return;
+        }
+
+        const responseHandlers = {};
+        const response = {
+          statusCode: responseOptions.statusCode,
+          on: (event, handler) => {
+            responseHandlers[event] = handler;
+            return response;
+          },
+        };
+        callback(response);
+
+        const respond = () => {
+          if (responseOptions.body) {
+            responseHandlers.data?.(Buffer.from(responseOptions.body));
+          }
+          if (responseOptions.responseError) {
+            responseHandlers.error?.(responseOptions.responseError);
+            return;
+          }
+          responseHandlers.end?.();
+        };
+
+        if (defer) {
+          pendingResponses.push(respond);
+        } else {
+          respond();
+        }
+      }),
+    };
+    requests.push(request);
+    return request;
+  });
+
+  return {
+    requests,
+    requestSpy,
+    get pendingCount() {
+      return pendingResponses.length;
+    },
+    respondNext() {
+      const respond = pendingResponses.shift();
+      if (!respond) throw new Error("No deferred HTTPS response is pending");
+      respond();
+    },
+  };
+}
+
+function makeBalanceBody(total, isAvailable = true) {
+  return JSON.stringify({
+    is_available: isAvailable,
+    balance_infos: [
+      {
+        currency: "USD",
+        total_balance: total,
+        granted_balance: "0.00",
+        topped_up_balance: total,
+      },
+    ],
+  });
+}
+
+function createExtensionContext(initialApiKey) {
+  let apiKey = initialApiKey;
+  const state = new Map();
+  const context = {
+    secrets: {
+      get: vi.fn(async () => apiKey),
+      store: vi.fn(async (_key, value) => {
+        apiKey = value;
+      }),
+      delete: vi.fn(async () => {
+        apiKey = undefined;
+      }),
+    },
+    globalState: {
+      get: (key, fallback) => (state.has(key) ? state.get(key) : fallback),
+      update: vi.fn(async (key, value) => {
+        state.set(key, value);
+      }),
+    },
+    subscriptions: [],
+  };
+  return { context, state, getApiKey: () => apiKey };
+}
+
+function activateForTest(context) {
+  const statusBar = { show: vi.fn(), dispose: vi.fn() };
+  vi.spyOn(vscode.window, "createStatusBarItem").mockReturnValue(statusBar);
+  activate(context);
+  return statusBar;
+}
+
+function disposeExtension(context) {
+  for (const subscription of context.subscriptions) {
+    subscription.dispose?.();
+  }
+}
+
+async function waitUntil(predicate) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await Promise.resolve();
+  }
+  throw new Error("Condition was not reached after flushing promises");
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("fetchBalance — API parsing", () => {
   it("[DU-API-UNIT-001] parses successful balance response", () => {
@@ -63,6 +225,413 @@ describe("fetchBalance — API parsing", () => {
 
     expect(parseFloat(info.total_balance).toFixed(2)).toBe("0.00");
     expect(parseFloat(info.total_balance).toFixed(4)).toBe("0.0042");
+  });
+});
+
+describe("fetchBalance — transport errors", () => {
+  it("[DU-API-UNIT-005] sends the key securely and parses a successful response", async () => {
+    const body = makeBalanceBody("12.34");
+    const { requestSpy } = mockHttpsRequest({ body });
+
+    await expect(fetchBalance("sk-test-secret")).resolves.toMatchObject({
+      is_available: true,
+      balance_infos: [
+        {
+          currency: "USD",
+          total_balance: "12.34",
+          granted_balance: "0.00",
+          topped_up_balance: "12.34",
+        },
+      ],
+    });
+
+    expect(requestSpy).toHaveBeenCalledOnce();
+    expect(requestSpy.mock.calls[0][0]).toMatchObject({
+      hostname: "api.deepseek.com",
+      path: "/user/balance",
+      headers: { Authorization: "Bearer sk-test-secret" },
+    });
+  });
+
+  it("[DU-API-UNIT-006] classifies rejected credentials", async () => {
+    mockHttpsRequest({
+      statusCode: 401,
+      body: JSON.stringify({ error: { message: "Authentication failed" } }),
+    });
+
+    await expect(fetchBalance("bad-key")).rejects.toMatchObject({
+      name: "BalanceFetchError",
+      kind: "auth",
+      statusCode: 401,
+    });
+  });
+
+  it("[DU-API-UNIT-007] classifies rate limiting", async () => {
+    mockHttpsRequest({ statusCode: 429, body: "Too many requests" });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "rate-limit",
+      statusCode: 429,
+    });
+  });
+
+  it("[DU-API-UNIT-008] classifies malformed successful responses", async () => {
+    mockHttpsRequest({ body: "not-json" });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "invalid-response",
+    });
+  });
+
+  it("[DU-API-UNIT-009] classifies request timeouts", async () => {
+    mockHttpsRequest({ timeout: true });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({ kind: "timeout" });
+  });
+
+  it("[DU-API-UNIT-010] classifies network failures", async () => {
+    mockHttpsRequest({ requestError: new Error("socket unavailable") });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({ kind: "network" });
+  });
+
+  it("[DU-API-UNIT-011] settles when the response stream aborts", async () => {
+    mockHttpsRequest({
+      body: '{"is_available":',
+      responseError: new Error("aborted"),
+    });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      name: "BalanceFetchError",
+      kind: "network",
+      message: "aborted",
+    });
+  });
+
+  it("[DU-API-UNIT-012] rejects an empty successful payload", async () => {
+    mockHttpsRequest({ body: "{}" });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "invalid-response",
+      statusCode: 200,
+    });
+  });
+
+  it("[DU-API-UNIT-013] rejects a null successful payload", async () => {
+    mockHttpsRequest({ body: "null" });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "invalid-response",
+      statusCode: 200,
+    });
+  });
+
+  it("[DU-API-UNIT-014] accepts unavailable accounts with populated balance data", async () => {
+    mockHttpsRequest({ body: makeBalanceBody("0.00", false) });
+
+    await expect(fetchBalance("sk-test")).resolves.toMatchObject({
+      is_available: false,
+      balance_infos: [{ currency: "USD", total_balance: "0.00" }],
+    });
+  });
+
+  it("[DU-API-UNIT-015] rejects an empty balance_infos array", async () => {
+    mockHttpsRequest({
+      body: JSON.stringify({ is_available: false, balance_infos: [] }),
+    });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "invalid-response",
+      statusCode: 200,
+    });
+  });
+
+  it("[DU-API-UNIT-016] classifies insufficient balance", async () => {
+    mockHttpsRequest({
+      statusCode: 402,
+      body: JSON.stringify({ error: { message: "Insufficient Balance" } }),
+    });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "insufficient-balance",
+      statusCode: 402,
+    });
+  });
+
+  it("[DU-API-UNIT-017] classifies mocked HTTP 5xx responses as service failures", async () => {
+    mockHttpsRequest({ statusCode: 503, body: "Service Unavailable" });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "service",
+      statusCode: 503,
+    });
+  });
+
+  // The status bar reads amounts with parseFloat and treats a missing
+  // is_available as available, so validation must not reject payloads those
+  // consumers already handle — otherwise a benign API change breaks every
+  // refresh instead of degrading gracefully.
+  it("[DU-API-UNIT-018] accepts numeric balance amounts", async () => {
+    mockHttpsRequest({
+      body: JSON.stringify({
+        is_available: true,
+        balance_infos: [
+          { currency: "USD", total_balance: 12.5, granted_balance: 0, topped_up_balance: 12.5 },
+        ],
+      }),
+    });
+
+    await expect(fetchBalance("sk-test")).resolves.toMatchObject({
+      balance_infos: [{ currency: "USD", total_balance: 12.5 }],
+    });
+  });
+
+  it("[DU-API-UNIT-019] accepts a payload without is_available", async () => {
+    mockHttpsRequest({
+      body: JSON.stringify({
+        balance_infos: [
+          {
+            currency: "USD",
+            total_balance: "12.50",
+            granted_balance: "0.00",
+            topped_up_balance: "12.50",
+          },
+        ],
+      }),
+    });
+
+    await expect(fetchBalance("sk-test")).resolves.toMatchObject({
+      balance_infos: [{ currency: "USD", total_balance: "12.50" }],
+    });
+  });
+
+  it("[DU-API-UNIT-020] accepts a payload without display-only amount fields", async () => {
+    mockHttpsRequest({
+      body: JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: "USD", total_balance: "12.50" }],
+      }),
+    });
+
+    await expect(fetchBalance("sk-test")).resolves.toMatchObject({
+      balance_infos: [{ currency: "USD", total_balance: "12.50" }],
+    });
+  });
+
+  it("[DU-API-UNIT-021] still rejects a balance with an unreadable total", async () => {
+    mockHttpsRequest({
+      body: JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: "USD", total_balance: "" }],
+      }),
+    });
+
+    await expect(fetchBalance("sk-test")).rejects.toMatchObject({
+      kind: "invalid-response",
+      statusCode: 200,
+    });
+  });
+});
+
+describe("Balance errors — user-facing presentation", () => {
+  it("[DU-ERR-UNIT-001] gives rejected credentials an actionable message", () => {
+    const presentation = getBalanceErrorPresentation(
+      new BalanceFetchError("auth", "server detail", 401),
+    );
+
+    expect(presentation.statusText).toContain("Invalid API key");
+    expect(presentation.tooltip).toContain("Open options to change it");
+    expect(presentation.popupDescription).toContain("change your DeepSeek API key");
+    expect(JSON.stringify(presentation)).not.toContain("server detail");
+  });
+
+  it.each([
+    ["rate-limit", "Rate limited"],
+    ["timeout", "Timed out"],
+    ["network", "Network error"],
+    ["invalid-response", "Invalid response"],
+    ["service", "Service error"],
+  ])("[DU-ERR-UNIT-002] distinguishes %s failures", (kind, expected) => {
+    const presentation = getBalanceErrorPresentation(
+      new BalanceFetchError(kind, "internal detail", 500),
+    );
+    expect(presentation.statusText).toContain(expected);
+  });
+
+  it("[DU-ERR-UNIT-003] replaces the popup loading row with the failure", () => {
+    const quickPick = { items: [] };
+    const context = { globalState: { get: (_key, fallback) => fallback } };
+    const presentation = getBalanceErrorPresentation(
+      new BalanceFetchError("network", "internal detail"),
+    );
+
+    renderQuickPickItems(quickPick, context, null, presentation);
+
+    expect(quickPick.items[0]).toMatchObject({
+      label: expect.stringContaining("Could not reach DeepSeek"),
+      description: expect.stringContaining("Check your connection"),
+    });
+    expect(quickPick.items.some((item) => item.label?.includes("Loading balance"))).toBe(false);
+  });
+
+  it("[DU-ERR-UNIT-004] points insufficient-balance failures at the Top Up affordance", () => {
+    const presentation = getBalanceErrorPresentation(
+      new BalanceFetchError("insufficient-balance", "server detail", 402),
+    );
+
+    expect(presentation.statusText).toContain("Insufficient balance");
+    expect(presentation.tooltip).toContain("top up");
+    expect(presentation.popupDescription).toContain("Top up");
+    expect(JSON.stringify(presentation)).not.toContain("server detail");
+  });
+
+  it("[DU-ERR-UNIT-005] does not render stale balance figures beside an error", () => {
+    const quickPick = { items: [] };
+    const context = { globalState: { get: (_key, fallback) => fallback } };
+    const staleBalance = JSON.parse(makeBalanceBody("99.00"));
+    const presentation = getBalanceErrorPresentation(
+      new BalanceFetchError("network", "internal detail"),
+    );
+
+    renderQuickPickItems(quickPick, context, staleBalance, presentation);
+
+    expect(quickPick.items.some((item) => item.label?.includes("$99.00"))).toBe(false);
+    expect(quickPick.items.some((item) => item.label?.includes("Loading balance"))).toBe(false);
+  });
+});
+
+describe("Balance refresh — concurrent request guard", () => {
+  it("[DU-REFRESH-UNIT-001] shares one in-flight operation and resets after completion", async () => {
+    const resolvers = [];
+    const task = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const singleFlight = createSingleFlight(task);
+
+    const first = singleFlight("first");
+    const second = singleFlight("second");
+    await Promise.resolve();
+
+    expect(task).toHaveBeenCalledOnce();
+    expect(task).toHaveBeenCalledWith("first");
+    resolvers[0]("shared");
+    await expect(Promise.all([first, second])).resolves.toEqual(["shared", "shared"]);
+
+    const third = singleFlight("third");
+    await Promise.resolve();
+    expect(task).toHaveBeenCalledTimes(2);
+    resolvers[1]("fresh");
+    await expect(third).resolves.toBe("fresh");
+  });
+});
+
+describe("API key changes — request supersession", () => {
+  it("[DU-KEY-UNIT-001] verifies a changed key with a fresh request and suppresses old-key state", async () => {
+    const oldBody = makeBalanceBody("5.00");
+    const newBody = makeBalanceBody("50.00");
+    const httpsMock = mockHttpsRequest({
+      defer: true,
+      responses: [{ body: oldBody }, { body: newBody }],
+    });
+    const { context, state, getApiKey } = createExtensionContext("old-key");
+    const statusBar = activateForTest(context);
+    const infoSpy = vi.spyOn(vscode.window, "showInformationMessage");
+    const warningSpy = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockReturnValue(Promise.resolve(undefined));
+    vi.spyOn(vscode.window, "showInputBox").mockResolvedValue("new-key");
+
+    try {
+      await waitUntil(() => httpsMock.pendingCount === 1);
+      const change = promptForApiKey(context);
+      await waitUntil(() => getApiKey() === "new-key");
+
+      httpsMock.respondNext();
+      await waitUntil(() => httpsMock.pendingCount === 1);
+      httpsMock.respondNext();
+      await change;
+
+      expect(httpsMock.requestSpy).toHaveBeenCalledTimes(2);
+      expect(
+        httpsMock.requestSpy.mock.calls.map(([options]) => options.headers.Authorization),
+      ).toEqual(["Bearer old-key", "Bearer new-key"]);
+      expect(statusBar.text).toContain("$50.00");
+      expect(state.get("deepseek-balance-history").USD.map((sample) => sample.a)).toEqual([50]);
+      expect(warningSpy).not.toHaveBeenCalled();
+      expect(infoSpy).toHaveBeenCalledOnce();
+      expect(infoSpy).toHaveBeenCalledWith("DeepSeek API key saved.");
+    } finally {
+      disposeExtension(context);
+    }
+  });
+
+  it("[DU-KEY-UNIT-002] clearing a key suppresses the old request and ends logged out", async () => {
+    const httpsMock = mockHttpsRequest({ defer: true, body: makeBalanceBody("5.00") });
+    const { context, state, getApiKey } = createExtensionContext("old-key");
+    const statusBar = activateForTest(context);
+    const warningSpy = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockReturnValue(Promise.resolve(undefined));
+
+    try {
+      await waitUntil(() => httpsMock.pendingCount === 1);
+      const clear = handleAction(context, "clear");
+      await waitUntil(() => getApiKey() === undefined);
+
+      httpsMock.respondNext();
+      await clear;
+
+      expect(httpsMock.requestSpy).toHaveBeenCalledOnce();
+      expect(statusBar.text).toContain("Not logged in");
+      expect(state.has("deepseek-balance-history")).toBe(false);
+      expect(warningSpy).not.toHaveBeenCalled();
+    } finally {
+      disposeExtension(context);
+    }
+  });
+
+  it("[DU-KEY-UNIT-003] overlapping key changes verify and confirm only their own key", async () => {
+    const httpsMock = mockHttpsRequest({
+      defer: true,
+      responses: [
+        { body: makeBalanceBody("5.00") },
+        { body: makeBalanceBody("10.00") },
+        { statusCode: 401, body: JSON.stringify({ error: { message: "Authentication failed" } }) },
+      ],
+    });
+    const { context, getApiKey } = createExtensionContext("old-key");
+    const statusBar = activateForTest(context);
+    const infoSpy = vi.spyOn(vscode.window, "showInformationMessage");
+    vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(Promise.resolve(undefined));
+    vi.spyOn(vscode.window, "showInputBox")
+      .mockResolvedValueOnce("first-new-key")
+      .mockResolvedValueOnce("second-new-key");
+
+    try {
+      await waitUntil(() => httpsMock.pendingCount === 1);
+      const firstChange = promptForApiKey(context);
+      const secondChange = promptForApiKey(context);
+      await waitUntil(() => getApiKey() === "first-new-key");
+
+      httpsMock.respondNext();
+      await waitUntil(() => httpsMock.pendingCount === 1);
+      httpsMock.respondNext();
+      await waitUntil(() => getApiKey() === "second-new-key" && httpsMock.pendingCount === 1);
+      httpsMock.respondNext();
+      await Promise.all([firstChange, secondChange]);
+
+      expect(
+        httpsMock.requestSpy.mock.calls.map(([options]) => options.headers.Authorization),
+      ).toEqual(["Bearer old-key", "Bearer first-new-key", "Bearer second-new-key"]);
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy).toHaveBeenCalledWith("DeepSeek API key saved.");
+      expect(statusBar.text).toContain("Invalid API key");
+    } finally {
+      disposeExtension(context);
+    }
   });
 });
 

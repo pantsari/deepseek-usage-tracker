@@ -24,19 +24,81 @@ const HISTORY_MAX_SAMPLES = 500;
 // Below this observation window a spend estimate would be mostly noise.
 const MIN_ESTIMATE_SPAN_MS = 30 * 60 * 1000;
 
-// The surge countdown is computed locally (no API call), so it can refresh
+// The pricing countdown is computed locally (no API call), so it can refresh
 // far more often than the balance without costing anything.
 const PRICING_REFRESH_MS = 30 * 1000;
 
-let updatingBalance = false;
 let statusBar;
 let lastBalance = null;
 // Last successful balance render, so pricing ticks can redraw the status bar
 // without another API call. Null while logged out, errored, or loading.
 let lastStatus = null;
-// null until the first pricing evaluation, so activating mid-surge does not
-// fire a "surge started" notification.
-let lastKnownSurge = null;
+// null until the first pricing evaluation, so activating during a peak window
+// does not fire a "peak pricing started" notification.
+let lastKnownPeak = null;
+// Balance results and credential changes share this queue so a credential
+// generation cannot change halfway through applying UI or persisted state.
+let balanceStateQueue = Promise.resolve();
+let credentialMutationQueue = Promise.resolve();
+let credentialGeneration = 0;
+
+class BalanceFetchError extends Error {
+  constructor(kind, message, statusCode) {
+    super(message);
+    this.name = "BalanceFetchError";
+    this.kind = kind;
+    this.statusCode = statusCode;
+  }
+}
+
+/**
+ * Wraps an async operation so concurrent callers share its in-flight promise.
+ * A later call starts a fresh operation after the shared one settles.
+ */
+function createSingleFlight(task) {
+  let inFlight = null;
+  return (...args) => {
+    if (inFlight) return inFlight;
+    inFlight = Promise.resolve()
+      .then(() => task(...args))
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+}
+
+const updateStatusBar = createSingleFlight(performBalanceUpdate);
+
+function runWithBalanceStateLock(task) {
+  const operation = balanceStateQueue.then(task, task);
+  balanceStateQueue = operation.catch(() => {});
+  return operation;
+}
+
+function queueCredentialMutation(task) {
+  const operation = credentialMutationQueue.then(task, task);
+  credentialMutationQueue = operation.catch(() => {});
+  return operation;
+}
+
+function supersededResult(generation) {
+  return {
+    balance: null,
+    error: null,
+    refreshed: false,
+    superseded: true,
+    generation,
+  };
+}
+
+async function refreshCredentialGeneration(context, generation) {
+  let result = await updateStatusBar(context);
+  if (result.generation === generation && !result.superseded) return result;
+  if (credentialGeneration !== generation) return supersededResult(generation);
+  result = await updateStatusBar(context);
+  return result;
+}
 
 /**
  * @param {vscode.ExtensionContext} context
@@ -67,7 +129,7 @@ function activate(context) {
   let timer = setInterval(() => updateStatusBar(context), getRefreshIntervalMs());
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 
-  lastKnownSurge = getDeepSeekPricingState(new Date(), getUiLocale()).isSurge;
+  lastKnownPeak = getDeepSeekPricingState(new Date(), getUiLocale()).isPeak;
   const pricingTimer = setInterval(() => pricingTick(), PRICING_REFRESH_MS);
   context.subscriptions.push({ dispose: () => clearInterval(pricingTimer) });
 
@@ -95,7 +157,7 @@ function getRefreshIntervalMs() {
 }
 
 // The VS Code display language also drives which l10n bundle is loaded, so
-// pricing time zones (UTC vs Shanghai) always match the UI language.
+// pricing time zones (UTC vs Beijing) always match the UI language.
 function getUiLocale() {
   return vscode.env.language || "en";
 }
@@ -108,10 +170,10 @@ function getPricingDisplay() {
   const locale = getUiLocale();
   const state = getDeepSeekPricingState(new Date(), locale);
   const countdown = formatDuration(state.timeUntilTransitionMs, locale);
-  const label = state.isSurge ? vscode.l10n.t("Pricing: Surge") : vscode.l10n.t("Pricing: Normal");
-  const description = state.isSurge
-    ? vscode.l10n.t("Surge ends at {0} · in {1}", state.displayTimeLabel, countdown)
-    : vscode.l10n.t("Surge starts at {0} · in {1}", state.displayTimeLabel, countdown);
+  const label = state.isPeak ? vscode.l10n.t("Pricing: Peak") : vscode.l10n.t("Pricing: Off-peak");
+  const description = state.isPeak
+    ? vscode.l10n.t("Peak ends at {0} · in {1}", state.displayTimeLabel, countdown)
+    : vscode.l10n.t("Peak starts at {0} · in {1}", state.displayTimeLabel, countdown);
   return { state, countdown, label, description };
 }
 
@@ -120,8 +182,8 @@ function getPricingDisplay() {
  * pricing state. Purely local — never calls the DeepSeek API.
  *
  * Color precedence: red for critical/depleted balance, amber when below a
- * warning threshold or during surge pricing, default otherwise. Surge keeps
- * the normal graph icon so it cannot be mistaken for a balance problem.
+ * warning threshold or during peak pricing, default otherwise. Peak pricing
+ * keeps the normal graph icon so it cannot be mistaken for a balance problem.
  */
 function renderStatusBar() {
   if (!lastStatus) return;
@@ -132,16 +194,16 @@ function renderStatusBar() {
     statusBar.text = "$(error) " + vscode.l10n.t("DeepSeek: {0} — out of credits", money);
   } else {
     const icon = severity === "ok" ? "$(graph)" : "$(warning)";
-    const text = pricing.state.isSurge
-      ? vscode.l10n.t("DeepSeek: {0} · Surge · Ends in {1}", money, pricing.countdown)
-      : vscode.l10n.t("DeepSeek: {0} · Normal · Surge in {1}", money, pricing.countdown);
+    const text = pricing.state.isPeak
+      ? vscode.l10n.t("DeepSeek: {0} · Peak · Ends in {1}", money, pricing.countdown)
+      : vscode.l10n.t("DeepSeek: {0} · Off-peak · Peak in {1}", money, pricing.countdown);
     statusBar.text = icon + " " + text;
   }
 
   statusBar.backgroundColor =
     severity === "depleted" || severity === "critical"
       ? new vscode.ThemeColor("statusBarItem.errorBackground")
-      : severity === "warning" || pricing.state.isSurge
+      : severity === "warning" || pricing.state.isPeak
         ? new vscode.ThemeColor("statusBarItem.warningBackground")
         : undefined;
 
@@ -157,29 +219,36 @@ function renderStatusBar() {
 
 /**
  * Periodic local pricing refresh: keeps the countdown current and notifies
- * on surge start/end. Comparing only the previous boolean state means a
+ * on peak start/end. Comparing only the previous boolean state means a
  * machine waking from sleep gets at most one notification, however many
  * transitions were missed.
  */
 function pricingTick() {
   const state = getDeepSeekPricingState(new Date(), getUiLocale());
-  if (lastKnownSurge !== null && lastKnownSurge !== state.isSurge) {
-    if (state.isSurge) {
+  if (lastKnownPeak !== null && lastKnownPeak !== state.isPeak) {
+    if (state.isPeak) {
       vscode.window.showInformationMessage(
         vscode.l10n.t(
-          "DeepSeek surge pricing has started. Higher API prices are now active until {0}.",
+          "DeepSeek peak pricing has started. Higher API prices are now active until {0}.",
+          state.displayTimeLabel,
+        ),
+      );
+    } else if (state.nextTransitionDayOffset > 1) {
+      vscode.window.showInformationMessage(
+        vscode.l10n.t(
+          "DeepSeek peak pricing has ended. Off-peak API pricing is active through the weekend; the next peak window starts Monday at {0}.",
           state.displayTimeLabel,
         ),
       );
     } else {
       vscode.window.showInformationMessage(
         vscode.l10n.t(
-          "DeepSeek surge pricing has ended. Normal API pricing is now active until the next surge window.",
+          "DeepSeek peak pricing has ended. Off-peak API pricing is now active until the next peak window.",
         ),
       );
     }
   }
-  lastKnownSurge = state.isSurge;
+  lastKnownPeak = state.isPeak;
   renderStatusBar();
 }
 
@@ -503,115 +572,212 @@ async function promptForApiKey(context) {
 
   if (!apiKey) return;
 
-  await context.secrets.store(SECRET_KEY_ID, apiKey.trim());
-  await updateStatusBar(context);
-  vscode.window.showInformationMessage(vscode.l10n.t("DeepSeek API key saved."));
+  return queueCredentialMutation(async () => {
+    let generation;
+    await runWithBalanceStateLock(async () => {
+      credentialGeneration += 1;
+      generation = credentialGeneration;
+      await context.secrets.store(SECRET_KEY_ID, apiKey.trim());
+      lastBalance = null;
+      lastStatus = null;
+    });
+
+    const result = await refreshCredentialGeneration(context, generation);
+    if (credentialGeneration === generation && result.refreshed) {
+      vscode.window.showInformationMessage(vscode.l10n.t("DeepSeek API key saved."));
+    }
+  });
+}
+
+function getBalanceErrorPresentation(error) {
+  const kind = error instanceof BalanceFetchError ? error.kind : "unknown";
+
+  switch (kind) {
+    case "auth":
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Invalid API key"),
+        tooltip: vscode.l10n.t("DeepSeek rejected this API key. Open options to change it."),
+        popupLabel: "$(error) " + vscode.l10n.t("Authentication failed"),
+        popupDescription: vscode.l10n.t("Check or change your DeepSeek API key"),
+      };
+    case "insufficient-balance":
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Insufficient balance"),
+        tooltip: vscode.l10n.t("DeepSeek reported insufficient balance. Open options to top up."),
+        popupLabel: "$(error) " + vscode.l10n.t("Insufficient DeepSeek balance"),
+        popupDescription: vscode.l10n.t("Top up your DeepSeek account to continue"),
+      };
+    case "rate-limit":
+      return {
+        statusText: "$(warning) " + vscode.l10n.t("DeepSeek: Rate limited"),
+        tooltip: vscode.l10n.t("DeepSeek is rate limiting balance requests. Click to retry."),
+        popupLabel: "$(warning) " + vscode.l10n.t("Balance request rate limited"),
+        popupDescription: vscode.l10n.t("Wait a moment, then retry"),
+        warningBackground: true,
+      };
+    case "timeout":
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Timed out"),
+        tooltip: vscode.l10n.t("The DeepSeek balance request timed out. Click to retry."),
+        popupLabel: "$(error) " + vscode.l10n.t("Balance request timed out"),
+        popupDescription: vscode.l10n.t("Check your connection, then retry"),
+      };
+    case "network":
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Network error"),
+        tooltip: vscode.l10n.t("Could not reach DeepSeek. Check your connection and retry."),
+        popupLabel: "$(error) " + vscode.l10n.t("Could not reach DeepSeek"),
+        popupDescription: vscode.l10n.t("Check your connection, then retry"),
+      };
+    case "invalid-response":
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Invalid response"),
+        tooltip: vscode.l10n.t("DeepSeek returned an invalid balance response. Click to retry."),
+        popupLabel: "$(error) " + vscode.l10n.t("Invalid balance response"),
+        popupDescription: vscode.l10n.t("DeepSeek returned data the extension could not read"),
+      };
+    case "service":
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Service error"),
+        tooltip: error.statusCode
+          ? vscode.l10n.t("DeepSeek returned HTTP {0}. Click to retry.", error.statusCode)
+          : vscode.l10n.t("DeepSeek could not return your balance. Click to retry."),
+        popupLabel: "$(error) " + vscode.l10n.t("DeepSeek service error"),
+        popupDescription: vscode.l10n.t("DeepSeek could not return your balance"),
+      };
+    default:
+      return {
+        statusText: "$(error) " + vscode.l10n.t("DeepSeek: Error"),
+        tooltip: vscode.l10n.t("Failed to fetch balance. Click to retry."),
+        popupLabel: "$(error) " + vscode.l10n.t("Balance request failed"),
+        popupDescription: vscode.l10n.t("Click Refresh to try again"),
+      };
+  }
+}
+
+function showBalanceError(error) {
+  const presentation = getBalanceErrorPresentation(error);
+  statusBar.text = presentation.statusText;
+  statusBar.tooltip = presentation.tooltip;
+  statusBar.backgroundColor = new vscode.ThemeColor(
+    presentation.warningBackground
+      ? "statusBarItem.warningBackground"
+      : "statusBarItem.errorBackground",
+  );
+  lastStatus = null;
+  return presentation;
 }
 
 /**
  * @param {vscode.ExtensionContext} context
  */
-async function updateStatusBar(context) {
-  if (updatingBalance) return;
-  updatingBalance = true;
+async function performBalanceUpdate(context) {
+  const generation = credentialGeneration;
   try {
     const apiKey = await context.secrets.get(SECRET_KEY_ID);
+    if (credentialGeneration !== generation) return supersededResult(generation);
 
     if (!apiKey) {
-      statusBar.text = "$(key) " + vscode.l10n.t("DeepSeek: Not logged in");
-      statusBar.tooltip = vscode.l10n.t("Click to enter your DeepSeek API key");
-      statusBar.backgroundColor = undefined;
-      lastBalance = null;
-      lastStatus = null;
-      return;
+      return runWithBalanceStateLock(() => {
+        if (credentialGeneration !== generation) return supersededResult(generation);
+        statusBar.text = "$(key) " + vscode.l10n.t("DeepSeek: Not logged in");
+        statusBar.tooltip = vscode.l10n.t("Click to enter your DeepSeek API key");
+        statusBar.backgroundColor = undefined;
+        lastBalance = null;
+        lastStatus = null;
+        return { balance: null, error: null, refreshed: false, generation };
+      });
     }
 
     const balance = await fetchBalance(apiKey);
-    lastBalance = balance;
+    return runWithBalanceStateLock(async () => {
+      if (credentialGeneration !== generation) return supersededResult(generation);
+      lastBalance = balance;
 
-    // is_available flips to false when credits run out, but balance_infos is
-    // still returned — keep showing numbers and let the warning logic fire.
-    if (balance.balance_infos && balance.balance_infos.length > 0) {
-      const currency = getPreferredCurrency(context);
-      const info = findBalanceInfo(balance, currency);
-      const total = info ? parseFloat(info.total_balance) : NaN;
+      // is_available flips to false when credits run out, but balance_infos is
+      // still returned — keep showing numbers and let the warning logic fire.
+      if (balance.balance_infos && balance.balance_infos.length > 0) {
+        const currency = getPreferredCurrency(context);
+        const info = findBalanceInfo(balance, currency);
+        const total = info ? parseFloat(info.total_balance) : NaN;
 
-      if (info && Number.isFinite(total)) {
-        const symbol = getCurrencySymbol(info.currency);
-        const money = symbol + total.toFixed(2);
+        if (info && Number.isFinite(total)) {
+          const symbol = getCurrencySymbol(info.currency);
+          const money = symbol + total.toFixed(2);
 
-        const severity = await checkBalanceWarnings(
-          context,
-          total,
-          info.currency,
-          balance.is_available !== false,
-        );
+          const severity = await checkBalanceWarnings(
+            context,
+            total,
+            info.currency,
+            balance.is_available !== false,
+          );
 
-        const samples = await recordBalanceSample(context, info.currency, total);
-        const rate = estimateSpendRate(samples);
+          const samples = await recordBalanceSample(context, info.currency, total);
+          const rate = estimateSpendRate(samples);
 
-        const tooltipLines = [
-          vscode.l10n.t("Display: {0}", info.currency),
-          vscode.l10n.t("Total balance:   {0}", symbol + info.total_balance),
-          vscode.l10n.t("Topped-up:       {0}", symbol + info.topped_up_balance),
-          vscode.l10n.t("Granted:         {0}", symbol + info.granted_balance),
-        ];
+          const tooltipLines = [
+            vscode.l10n.t("Display: {0}", info.currency),
+            vscode.l10n.t("Total balance:   {0}", symbol + info.total_balance),
+            vscode.l10n.t("Topped-up:       {0}", symbol + info.topped_up_balance),
+            vscode.l10n.t("Granted:         {0}", symbol + info.granted_balance),
+          ];
 
-        if (balance.balance_infos.length > 1) {
-          tooltipLines.push("");
-          for (const bi of balance.balance_infos) {
-            const s = getCurrencySymbol(bi.currency);
-            tooltipLines.push(
-              vscode.l10n.t(
-                "{0}: {1} (topped-up {2}, granted {3})",
-                bi.currency,
-                s + parseFloat(bi.total_balance).toFixed(2),
-                s + bi.topped_up_balance,
-                s + bi.granted_balance,
-              ),
-            );
+          if (balance.balance_infos.length > 1) {
+            tooltipLines.push("");
+            for (const bi of balance.balance_infos) {
+              const s = getCurrencySymbol(bi.currency);
+              tooltipLines.push(
+                vscode.l10n.t(
+                  "{0}: {1} (topped-up {2}, granted {3})",
+                  bi.currency,
+                  s + parseFloat(bi.total_balance).toFixed(2),
+                  s + bi.topped_up_balance,
+                  s + bi.granted_balance,
+                ),
+              );
+            }
           }
-        }
 
-        if (rate) {
-          const perDayStr = rate.perDay >= 0.01 ? rate.perDay.toFixed(2) : "<0.01";
-          tooltipLines.push("");
-          tooltipLines.push(vscode.l10n.t("Est. spend: {0}/day", symbol + perDayStr));
-          if (rate.daysLeft < 1) {
-            tooltipLines.push(vscode.l10n.t("At this rate, credits run out within a day"));
-          } else if (rate.daysLeft <= 365) {
-            tooltipLines.push(
-              vscode.l10n.t(
-                "At this rate, credits run out in about {0} days",
-                Math.round(rate.daysLeft),
-              ),
-            );
+          if (rate) {
+            const perDayStr = rate.perDay >= 0.01 ? rate.perDay.toFixed(2) : "<0.01";
+            tooltipLines.push("");
+            tooltipLines.push(vscode.l10n.t("Est. spend: {0}/day", symbol + perDayStr));
+            if (rate.daysLeft < 1) {
+              tooltipLines.push(vscode.l10n.t("At this rate, credits run out within a day"));
+            } else if (rate.daysLeft <= 365) {
+              tooltipLines.push(
+                vscode.l10n.t(
+                  "At this rate, credits run out in about {0} days",
+                  Math.round(rate.daysLeft),
+                ),
+              );
+            }
           }
-        }
 
-        lastStatus = { severity, money, tooltipLines };
-        renderStatusBar();
+          lastStatus = { severity, money, tooltipLines };
+          renderStatusBar();
+        } else {
+          statusBar.text = "$(warning) " + vscode.l10n.t("DeepSeek: No data");
+          statusBar.tooltip = vscode.l10n.t("Balance returned but no currency data found");
+          statusBar.backgroundColor = undefined;
+          lastStatus = null;
+        }
       } else {
-        statusBar.text = "$(warning) " + vscode.l10n.t("DeepSeek: No data");
-        statusBar.tooltip = vscode.l10n.t("Balance returned but no currency data found");
-        statusBar.backgroundColor = undefined;
+        statusBar.text = "$(warning) " + vscode.l10n.t("DeepSeek: Unavailable");
+        statusBar.tooltip = vscode.l10n.t(
+          "Balance info is not available — you may be out of credits",
+        );
+        statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
         lastStatus = null;
       }
-    } else {
-      statusBar.text = "$(warning) " + vscode.l10n.t("DeepSeek: Unavailable");
-      statusBar.tooltip = vscode.l10n.t(
-        "Balance info is not available — you may be out of credits",
-      );
-      statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-      lastStatus = null;
-    }
-  } catch {
-    statusBar.text = "$(error) " + vscode.l10n.t("DeepSeek: Error");
-    statusBar.tooltip = vscode.l10n.t("Failed to fetch balance. Click to retry.");
-    statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.errorBackground");
-    lastStatus = null;
-  } finally {
-    updatingBalance = false;
+      return { balance, error: null, refreshed: true, generation };
+    });
+  } catch (error) {
+    return runWithBalanceStateLock(() => {
+      if (credentialGeneration !== generation) return supersededResult(generation);
+      showBalanceError(error);
+      return { balance: null, error, refreshed: false, generation };
+    });
   }
 }
 
@@ -707,50 +873,67 @@ async function showBalancePopUp(context) {
 
   quickPick.show();
 
-  fetchBalance(apiKey)
-    .then((balance) => {
-      lastBalance = balance;
-      renderQuickPickItems(quickPick, context, balance);
-      updateStatusBar(context);
+  updateStatusBar(context)
+    .then((result) => {
+      if (resolved) return;
+      const errorPresentation = result.error
+        ? getBalanceErrorPresentation(result.error)
+        : undefined;
+      renderQuickPickItems(quickPick, context, result.balance, errorPresentation);
 
       const newHasOther =
-        balance.balance_infos &&
-        balance.balance_infos.some((info) => info.currency === otherCurrency);
+        result.balance &&
+        result.balance.balance_infos &&
+        result.balance.balance_infos.some((info) => info.currency === otherCurrency);
       quickPick.buttons = makePopUpButtons(otherCurrency, newHasOther);
     })
-    .catch(() => {});
+    .catch((error) => {
+      if (resolved) return;
+      const presentation = showBalanceError(error);
+      renderQuickPickItems(quickPick, context, null, presentation);
+    });
 
   await done;
   disposables.forEach((d) => d.dispose());
 }
 
-function renderQuickPickItems(quickPick, context, balance) {
+function renderQuickPickItems(quickPick, context, balance, errorPresentation) {
   const currency = getPreferredCurrency(context);
   const items = [];
 
-  if (!balance || !balance.balance_infos || balance.balance_infos.length === 0) {
+  if (errorPresentation) {
     items.push({
-      label: "$(loading~spin) " + vscode.l10n.t("Loading balance..."),
-      description: "",
-      detail: "",
+      label: errorPresentation.popupLabel,
+      description: errorPresentation.popupDescription,
       alwaysShow: true,
     });
-  } else {
-    for (const info of balance.balance_infos) {
-      const symbol = getCurrencySymbol(info.currency);
-      const isActive = info.currency === currency;
-      const total = parseFloat(info.total_balance).toFixed(2);
+  }
 
+  if (!errorPresentation) {
+    if (!balance || !balance.balance_infos || balance.balance_infos.length === 0) {
       items.push({
-        label: `${symbol}${total}`,
-        description: info.currency + (isActive ? " " + vscode.l10n.t("(active)") : ""),
-        detail: vscode.l10n.t(
-          "Topped-up: {0}  |  Granted: {1}",
-          symbol + info.topped_up_balance,
-          symbol + info.granted_balance,
-        ),
+        label: "$(loading~spin) " + vscode.l10n.t("Loading balance..."),
+        description: "",
+        detail: "",
         alwaysShow: true,
       });
+    } else {
+      for (const info of balance.balance_infos) {
+        const symbol = getCurrencySymbol(info.currency);
+        const isActive = info.currency === currency;
+        const total = parseFloat(info.total_balance).toFixed(2);
+
+        items.push({
+          label: `${symbol}${total}`,
+          description: info.currency + (isActive ? " " + vscode.l10n.t("(active)") : ""),
+          detail: vscode.l10n.t(
+            "Topped-up: {0}  |  Granted: {1}",
+            symbol + info.topped_up_balance,
+            symbol + info.granted_balance,
+          ),
+          alwaysShow: true,
+        });
+      }
     }
   }
 
@@ -829,8 +1012,9 @@ async function handleAction(context, action) {
       break;
     }
     case "refresh":
-      await updateStatusBar(context);
-      vscode.window.showInformationMessage(vscode.l10n.t("DeepSeek balance refreshed."));
+      if ((await updateStatusBar(context)).refreshed) {
+        vscode.window.showInformationMessage(vscode.l10n.t("DeepSeek balance refreshed."));
+      }
       break;
     case "warning-thresholds":
       await showThresholdConfig(context);
@@ -839,10 +1023,23 @@ async function handleAction(context, action) {
       await promptForApiKey(context);
       break;
     case "clear":
-      await context.secrets.delete(SECRET_KEY_ID);
-      lastBalance = null;
-      await updateStatusBar(context);
-      vscode.window.showInformationMessage(vscode.l10n.t("DeepSeek API key cleared."));
+      await queueCredentialMutation(async () => {
+        let generation;
+        await runWithBalanceStateLock(async () => {
+          credentialGeneration += 1;
+          generation = credentialGeneration;
+          await context.secrets.delete(SECRET_KEY_ID);
+          statusBar.text = "$(key) " + vscode.l10n.t("DeepSeek: Not logged in");
+          statusBar.tooltip = vscode.l10n.t("Click to enter your DeepSeek API key");
+          statusBar.backgroundColor = undefined;
+          lastBalance = null;
+          lastStatus = null;
+        });
+        await refreshCredentialGeneration(context, generation);
+        if (credentialGeneration === generation) {
+          vscode.window.showInformationMessage(vscode.l10n.t("DeepSeek API key cleared."));
+        }
+      });
       break;
     case "top-up":
       vscode.env.openExternal(vscode.Uri.parse(TOP_UP_URL));
@@ -851,6 +1048,31 @@ async function handleAction(context, action) {
       vscode.env.openExternal(vscode.Uri.parse(DASHBOARD_URL));
       break;
   }
+}
+
+/**
+ * Validates only what the status bar and tooltips actually consume: a currency
+ * label and a readable total, checked with the same `parseFloat` the renderer
+ * uses. `is_available` and the granted/topped-up amounts are deliberately not
+ * required — the renderer already tolerates their absence, so demanding them
+ * would turn a benign DeepSeek API change into a failed refresh for everyone.
+ */
+function isUsableBalanceResponse(balance) {
+  return (
+    balance !== null &&
+    typeof balance === "object" &&
+    !Array.isArray(balance) &&
+    Array.isArray(balance.balance_infos) &&
+    balance.balance_infos.length > 0 &&
+    balance.balance_infos.every(
+      (info) =>
+        info !== null &&
+        typeof info === "object" &&
+        typeof info.currency === "string" &&
+        info.currency.length > 0 &&
+        Number.isFinite(parseFloat(info.total_balance)),
+    )
+  );
 }
 
 /**
@@ -876,28 +1098,66 @@ function fetchBalance(apiKey) {
         res.on("data", (chunk) => {
           data += chunk.toString();
         });
+        res.on("error", (error) => {
+          reject(new BalanceFetchError("network", error?.message || "Response stream failed"));
+        });
         res.on("end", () => {
           if (res.statusCode === 200) {
+            let balance;
             try {
-              resolve(JSON.parse(data));
+              balance = JSON.parse(data);
             } catch {
-              reject(new Error("Failed to parse response JSON"));
+              reject(
+                new BalanceFetchError(
+                  "invalid-response",
+                  "Failed to parse response JSON",
+                  res.statusCode,
+                ),
+              );
+              return;
             }
+            if (!isUsableBalanceResponse(balance)) {
+              reject(
+                new BalanceFetchError(
+                  "invalid-response",
+                  "Unexpected balance response shape",
+                  res.statusCode,
+                ),
+              );
+              return;
+            }
+            resolve(balance);
           } else {
+            let message = `HTTP ${res.statusCode}`;
             try {
               const parsed = JSON.parse(data);
-              reject(new Error(parsed.error?.message || `HTTP ${res.statusCode}`));
+              message = parsed.error?.message || message;
             } catch {
-              reject(new Error(`HTTP ${res.statusCode}`));
+              // Non-JSON error body: retain the safe HTTP status message.
             }
+
+            const kind =
+              res.statusCode === 401 || res.statusCode === 403
+                ? "auth"
+                : res.statusCode === 402
+                  ? "insufficient-balance"
+                  : res.statusCode === 429
+                    ? "rate-limit"
+                    : "service";
+            reject(new BalanceFetchError(kind, message, res.statusCode));
           }
         });
       },
     );
-    req.on("error", reject);
+    req.on("error", (error) => {
+      reject(
+        error instanceof BalanceFetchError
+          ? error
+          : new BalanceFetchError("network", error?.message || "Network request failed"),
+      );
+    });
     req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request timed out"));
+      req.destroy(new BalanceFetchError("timeout", "Request timed out"));
     });
     req.end();
   });
@@ -906,9 +1166,15 @@ function fetchBalance(apiKey) {
 function deactivate() {}
 
 module.exports = {
+  BalanceFetchError,
   activate,
   deactivate,
   fetchBalance,
+  getBalanceErrorPresentation,
+  createSingleFlight,
+  renderQuickPickItems,
+  promptForApiKey,
+  handleAction,
   getCurrencySymbol,
   getPreferredCurrency,
   setPreferredCurrency,
