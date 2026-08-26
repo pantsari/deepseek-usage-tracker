@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1] - 2026-08-26
+
+### Changed
+
+- Refreshed the status bar and Command Palette screenshots used on the
+  Marketplace listing
+
 ## [1.3.0] - 2026-08-25
 
 ### Added
